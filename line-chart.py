@@ -9,16 +9,43 @@ import os
 
 st.title("📊 Country Data Animation Generator")
 
-uploaded_file = st.file_uploader("Upload CSV", type=["csv","xlx","xlsx"])
+uploaded_file = st.file_uploader("Upload Data", type=["csv", "xlsx", "xls", "xlsm", "xlt", "xml", "xlsb"])
 country_name = st.text_input("Enter Country Name")
 generate_btn = st.button("Generate Animation")
 
 if uploaded_file and country_name and generate_btn:
-    df = pd.read_csv(uploaded_file)
+    # Determine file type and read accordingly
+    file_extension = uploaded_file.name.split(".")[-1].lower()
+    
+    try:
+        if file_extension == "csv":
+            df = pd.read_csv(uploaded_file)
+        elif file_extension in ["xlsx", "xls", "xlsm", "xlt", "xlsb"]:
+            df = pd.read_excel(uploaded_file)
+        elif file_extension == "xml":
+            df = pd.read_xml(uploaded_file)
+        else:
+            st.error(f"Unsupported file type: {file_extension}")
+            st.stop()
+            
+        st.success(f"✅ Successfully loaded {file_extension.upper()} file")
+        
+        # Check if required column exists
+        if "Country Name" not in df.columns:
+            st.error("The file doesn't contain a 'Country Name' column. Please upload a file with the correct format.")
+            st.stop()
+            
+    except Exception as e:
+        st.error(f"Error reading file: {str(e)}")
+        st.stop()
 
-    if country_name not in df["Country Name"].values:
-        st.error(f"Country '{country_name}' not found in CSV.")
-    else:
+    # Display loading message
+    with st.spinner(f"Processing data for {country_name}..."):
+        if country_name not in df["Country Name"].values:
+            st.error(f"Country '{country_name}' not found in the data file.")
+            st.stop()
+        
+        # Process the country data
         country_row = df[df["Country Name"] == country_name].iloc[0]
         years = df.columns[4:]
         values = country_row[4:].astype(float).values

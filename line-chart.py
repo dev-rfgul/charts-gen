@@ -6,135 +6,15 @@ from matplotlib.animation import FuncAnimation
 import matplotlib.cm as cm
 import tempfile
 import os
-from datetime import datetime
 import re
 
-st.title("📊 Dynamic Data Animation Generator")
-st.write("Upload any CSV/Excel file and create animated charts from your data!")
+st.title("📊 Time Series Data Animation Generator")
+st.write("Upload your data file and create animated charts showing how values change over time!")
 
 uploaded_file = st.file_uploader("Upload Data", type=["csv", "xlsx", "xls", "xlsm", "xlt", "xml", "xlsb"])
 
-def detect_data_structure(df):
-    """Automatically detect the structure of the uploaded data"""
-    structure_info = {
-        'entity_column': None,
-        'time_columns': [],
-        'value_columns': [],
-        'data_type': 'unknown',
-        'possible_entities': [],
-        'time_format': None
-    }
-    
-    # Look for common entity column names
-    entity_patterns = [
-        r'.*country.*', r'.*name.*', r'.*student.*', r'.*employee.*',
-        r'.*product.*', r'.*item.*', r'.*entity.*', r'.*id.*'
-    ]
-    
-    for col in df.columns:
-        col_lower = col.lower()
-        for pattern in entity_patterns:
-            if re.match(pattern, col_lower):
-                structure_info['entity_column'] = col
-                break
-        if structure_info['entity_column']:
-            break
-    
-    # If no entity column found, use first column
-    if not structure_info['entity_column']:
-        structure_info['entity_column'] = df.columns[0]
-    
-    # Get possible entities
-    if structure_info['entity_column'] in df.columns:
-        structure_info['possible_entities'] = df[structure_info['entity_column']].unique().tolist()
-    
-    # Detect time/year columns and value columns
-    for col in df.columns:
-        if col == structure_info['entity_column']:
-            continue
-            
-        # Check if column name looks like a year or date
-        if col.isdigit() and len(col) == 4 and 1900 <= int(col) <= 2100:
-            structure_info['time_columns'].append(col)
-        elif re.match(r'^\d{4}-\d{2}-\d{2}$', str(col)):  # Date format YYYY-MM-DD
-            structure_info['time_columns'].append(col)
-        elif re.match(r'.*year.*|.*date.*|.*time.*|.*period.*', col.lower()):
-            structure_info['time_columns'].append(col)
-        else:
-            # Check if column contains numeric data
-            try:
-                pd.to_numeric(df[col], errors='coerce')
-                if not df[col].isna().all():  # If conversion was successful for some values
-                    structure_info['value_columns'].append(col)
-            except:
-                pass
-    
-    # Determine data type based on entity column name
-    entity_col_lower = structure_info['entity_column'].lower()
-    if 'country' in entity_col_lower:
-        structure_info['data_type'] = 'country'
-    elif any(word in entity_col_lower for word in ['student', 'pupil', 'learner']):
-        structure_info['data_type'] = 'student'
-    elif any(word in entity_col_lower for word in ['employee', 'worker', 'staff']):
-        structure_info['data_type'] = 'employee'
-    elif any(word in entity_col_lower for word in ['product', 'item', 'goods']):
-        structure_info['data_type'] = 'product'
-    elif any(word in entity_col_lower for word in ['sales', 'revenue', 'income']):
-        structure_info['data_type'] = 'sales'
-    else:
-        structure_info['data_type'] = 'general'
-    
-    return structure_info
-
-def create_time_series_data(df, entity_name, entity_column, time_columns):
-    """Create time series data from wide format"""
-    entity_row = df[df[entity_column] == entity_name].iloc[0]
-    
-    time_data = []
-    value_data = []
-    
-    for time_col in time_columns:
-        try:
-            value = pd.to_numeric(entity_row[time_col], errors='coerce')
-            if not pd.isna(value):
-                # Try to convert time column to integer year
-                if time_col.isdigit():
-                    time_data.append(int(time_col))
-                else:
-                    time_data.append(len(time_data))  # Use index if can't parse
-                value_data.append(value)
-        except:
-            continue
-    
-    return pd.DataFrame({
-        "Time": time_data,
-        "Value": value_data
-    })
-
-def create_value_comparison_data(df, entity_column, value_columns, selected_entity=None):
-    """Create data for comparing multiple values for an entity"""
-    if selected_entity:
-        entity_data = df[df[entity_column] == selected_entity].iloc[0]
-        categories = []
-        values = []
-        
-        for col in value_columns:
-            try:
-                value = pd.to_numeric(entity_data[col], errors='coerce')
-                if not pd.isna(value):
-                    categories.append(col)
-                    values.append(value)
-            except:
-                continue
-        
-        return pd.DataFrame({
-            "Category": categories,
-            "Value": values
-        })
-    return None
-
-if uploaded_file:
-    # Load file
+def load_data(uploaded_file):
+    """Load data from various file formats"""
     file_extension = uploaded_file.name.split(".")[-1].lower()
     
     try:
@@ -146,186 +26,398 @@ if uploaded_file:
             df = pd.read_xml(uploaded_file)
         else:
             st.error(f"Unsupported file type: {file_extension}")
-            st.stop()
+            return None
+        return df
+    except Exception as e:
+        st.error(f"Error reading file: {str(e)}")
+        return None
+
+def detect_structure(df):
+    """Detect the structure of the uploaded data"""
+    structure = {
+        'entity_column': None,
+        'time_columns': [],
+        'metadata_columns': [],
+        'entities': []
+    }
+    
+    # Find entity column (usually first column with country/entity names)
+    possible_entity_cols = []
+    for col in df.columns[:5]:  # Check first 5 columns
+        if df[col].dtype == 'object' and df[col].nunique() > len(df) * 0.7:
+            possible_entity_cols.append(col)
+    
+    if possible_entity_cols:
+        structure['entity_column'] = possible_entity_cols[0]
+    else:
+        structure['entity_column'] = df.columns[0]  # Fallback to first column
+    
+    # Get unique entities
+    structure['entities'] = sorted(df[structure['entity_column']].dropna().unique().tolist())
+    
+    # Detect time columns (years, dates, or numeric columns that could represent time)
+    for col in df.columns:
+        col_str = str(col)
+        
+        # Skip entity column
+        if col == structure['entity_column']:
+            continue
+        
+        # Check if it's a year (4 digits between 1900-2100)
+        if col_str.isdigit() and len(col_str) == 4:
+            year = int(col_str)
+            if 1900 <= year <= 2100:
+                structure['time_columns'].append(col)
+        
+        # Check if it looks like a date
+        elif re.match(r'^\d{4}-\d{2}-\d{2}$', col_str) or re.match(r'^\d{2}/\d{2}/\d{4}$', col_str):
+            structure['time_columns'].append(col)
+        
+        # Check if column name suggests time
+        elif any(word in col_str.lower() for word in ['year', 'date', 'time', 'period', 'quarter', 'month']):
+            structure['time_columns'].append(col)
+        
+        # Check if it's a numeric column that could be time-based
+        elif col_str.replace('.', '').replace('-', '').isdigit():
+            try:
+                num_val = float(col_str)
+                if 1900 <= num_val <= 2100:  # Reasonable year range
+                    structure['time_columns'].append(col)
+            except:
+                pass
+        
+        # If not a time column, it might be metadata
+        else:
+            structure['metadata_columns'].append(col)
+    
+    # Sort time columns
+    structure['time_columns'] = sorted(structure['time_columns'], 
+                                     key=lambda x: float(str(x)) if str(x).replace('.', '').replace('-', '').isdigit() else 0)
+    
+    return structure
+
+def prepare_time_series_data(df, entity, entity_col, time_cols):
+    """Prepare time series data for a specific entity"""
+    # Get the row for the specific entity
+    entity_data = df[df[entity_col] == entity]
+    
+    if entity_data.empty:
+        return None
+    
+    entity_row = entity_data.iloc[0]
+    
+    # Extract time series data
+    time_values = []
+    data_values = []
+    
+    for time_col in time_cols:
+        try:
+            value = pd.to_numeric(entity_row[time_col], errors='coerce')
+            if not pd.isna(value):
+                # Convert time column to numeric if possible
+                if str(time_col).isdigit():
+                    time_val = int(str(time_col))
+                else:
+                    try:
+                        time_val = float(str(time_col))
+                    except:
+                        time_val = len(time_values)  # Use index as fallback
+                
+                time_values.append(time_val)
+                data_values.append(value)
+        except:
+            continue
+    
+    if not time_values:
+        return None
+    
+    return pd.DataFrame({
+        'Time': time_values,
+        'Value': data_values
+    }).sort_values('Time')
+
+def create_animated_line_chart(time_series_data, entity_name, chart_title="Time Series Animation"):
+    """Create animated line chart for time series data"""
+    x = time_series_data['Time'].values
+    y = time_series_data['Value'].values
+    
+    # Create smooth interpolation for better animation
+    points_per_segment = 5
+    x_smooth = np.linspace(x.min(), x.max(), len(x) * points_per_segment)
+    y_smooth = np.interp(x_smooth, x, y)
+    
+    # Set up the plot
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Create line and point objects
+    line, = ax.plot([], [], lw=3, color='#2E86AB', alpha=0.8)
+    point, = ax.plot([], [], 'o', color='#F18F01', markersize=8, zorder=5)
+    
+    # Set axis limits with padding
+    x_padding = (x.max() - x.min()) * 0.05 if len(x) > 1 else 1
+    y_padding = (y.max() - y.min()) * 0.1 if y.max() != y.min() else abs(y.max()) * 0.1 if y.max() != 0 else 1
+    
+    ax.set_xlim(x.min() - x_padding, x.max() + x_padding)
+    ax.set_ylim(y.min() - y_padding, y.max() + y_padding)
+    
+    # Styling
+    ax.set_title(f"{chart_title}\n{entity_name}", fontsize=16, fontweight='bold', pad=20)
+    ax.set_xlabel("Time", fontsize=12, fontweight='bold')
+    ax.set_ylabel("Value", fontsize=12, fontweight='bold')
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
+    # Add value annotation
+    value_text = ax.text(0.02, 0.98, '', transform=ax.transAxes, fontsize=12,
+                        verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    plt.tight_layout()
+    
+    def init():
+        line.set_data([], [])
+        point.set_data([], [])
+        value_text.set_text('')
+        return line, point, value_text
+    
+    def animate(i):
+        if i < len(x_smooth):
+            # Update line
+            line.set_data(x_smooth[:i+1], y_smooth[:i+1])
             
-        st.success(f"✅ Successfully loaded {file_extension.upper()} file")
+            # Update current point
+            current_x = x_smooth[i]
+            current_y = y_smooth[i]
+            point.set_data([current_x], [current_y])
+            
+            # Update value text
+            value_text.set_text(f'Time: {current_x:.1f}\nValue: {current_y:.2f}')
+        
+        return line, point, value_text
+    
+    anim = FuncAnimation(fig, animate, init_func=init, frames=len(x_smooth), 
+                        interval=100, blit=True, repeat=True)
+    
+    return anim, fig
+
+def create_animated_bar_race(df, entity_col, time_cols, top_n=10):
+    """Create animated bar race showing top entities over time"""
+    
+    # Prepare data for animation
+    frames_data = []
+    
+    for time_col in time_cols[:20]:  # Limit to first 20 time periods for performance
+        # Get data for this time period
+        time_data = df[[entity_col, time_col]].copy()
+        time_data.columns = ['Entity', 'Value']
+        time_data['Time'] = str(time_col)
+        time_data['Value'] = pd.to_numeric(time_data['Value'], errors='coerce')
+        time_data = time_data.dropna()
+        
+        # Get top N entities for this time period
+        time_data = time_data.nlargest(top_n, 'Value')
+        frames_data.append(time_data)
+    
+    if not frames_data:
+        return None, None
+    
+    # Set up the plot
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    def animate_bars(frame_idx):
+        ax.clear()
+        
+        if frame_idx < len(frames_data):
+            frame_data = frames_data[frame_idx]
+            time_period = frame_data['Time'].iloc[0]
+            
+            # Sort by value for this frame
+            frame_data = frame_data.sort_values('Value', ascending=True)
+            
+            # Create colors
+            colors = plt.cm.viridis(np.linspace(0, 1, len(frame_data)))
+            
+            # Create horizontal bar chart
+            bars = ax.barh(range(len(frame_data)), frame_data['Value'], color=colors)
+            
+            # Set labels
+            ax.set_yticks(range(len(frame_data)))
+            ax.set_yticklabels(frame_data['Entity'])
+            ax.set_xlabel('Value', fontsize=12, fontweight='bold')
+            ax.set_title(f'Top {top_n} Entities - Time Period: {time_period}', 
+                        fontsize=16, fontweight='bold', pad=20)
+            
+            # Add value labels on bars
+            for i, (bar, value) in enumerate(zip(bars, frame_data['Value'])):
+                ax.text(value + max(frame_data['Value']) * 0.01, i, f'{value:.1f}', 
+                       va='center', fontweight='bold')
+            
+            # Styling
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.grid(axis='x', alpha=0.3)
+            
+            # Set consistent x-axis limits
+            all_max = max([df['Value'].max() for df in frames_data if not df.empty])
+            ax.set_xlim(0, all_max * 1.1)
+        
+        plt.tight_layout()
+    
+    anim = FuncAnimation(fig, animate_bars, frames=len(frames_data), 
+                        interval=800, repeat=True, blit=False)
+    
+    return anim, fig
+
+# Main App Logic
+if uploaded_file:
+    # Load the data
+    df = load_data(uploaded_file)
+    
+    if df is not None:
+        st.success(f"✅ Successfully loaded file with {len(df)} rows and {len(df.columns)} columns")
         
         # Detect data structure
-        structure = detect_data_structure(df)
+        structure = detect_structure(df)
         
-        # Display data preview
+        # Show data preview
         st.subheader("📋 Data Preview")
         st.dataframe(df.head())
         
-        # Display detected structure
+        # Show detected structure
         st.subheader("🔍 Detected Data Structure")
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.write(f"**Data Type:** {structure['data_type'].title()}")
             st.write(f"**Entity Column:** {structure['entity_column']}")
-            st.write(f"**Number of Entities:** {len(structure['possible_entities'])}")
+            st.write(f"**Number of Entities:** {len(structure['entities'])}")
         
         with col2:
             st.write(f"**Time Columns:** {len(structure['time_columns'])}")
-            st.write(f"**Value Columns:** {len(structure['value_columns'])}")
+            if structure['time_columns']:
+                time_range = f"{structure['time_columns'][0]} - {structure['time_columns'][-1]}"
+                st.write(f"**Time Range:** {time_range}")
         
-        # Allow user to select entity and chart type
-        st.subheader("⚙️ Configuration")
+        with col3:
+            st.write(f"**Metadata Columns:** {len(structure['metadata_columns'])}")
         
-        selected_entity = st.selectbox(
-            f"Select {structure['data_type'].title()}:",
-            structure['possible_entities']
-        )
-        
-        chart_type = st.radio(
-            "Chart Type:",
-            ["Time Series Animation", "Value Comparison Animation"]
-        )
-        
-        # Additional options based on chart type
-        if chart_type == "Time Series Animation" and len(structure['time_columns']) > 0:
-            st.write("Time series data detected - will animate values over time")
-        elif chart_type == "Value Comparison Animation" and len(structure['value_columns']) > 0:
-            selected_values = st.multiselect(
-                "Select values to compare:",
-                structure['value_columns'],
-                default=structure['value_columns'][:5]  # Default to first 5
-            )
-        
-        # Generate button
-        generate_btn = st.button("🎬 Generate Animation")
-        
-        if generate_btn and selected_entity:
-            with st.spinner(f"Generating animation for {selected_entity}..."):
-                
-                if chart_type == "Time Series Animation" and structure['time_columns']:
-                    # Create time series animation
-                    data = create_time_series_data(df, selected_entity, structure['entity_column'], structure['time_columns'])
-                    
-                    if len(data) > 1:
-                        x = data["Time"].values
-                        y = data["Value"].values
-                        
-                        # Create smooth interpolation
-                        points_per_segment = 5
-                        x_smooth = np.linspace(x.min(), x.max(), len(x) * points_per_segment)
-                        y_smooth = np.interp(x_smooth, x, y)
-                        
-                        # Create animation
-                        fig, ax = plt.subplots(figsize=(10, 6))
-                        line, = ax.plot([], [], lw=3, color='#1f77b4')
-                        
-                        ax.set_xlim(min(x), max(x))
-                        ax.set_ylim(min(y) * 0.9, max(y) * 1.1)
-                        ax.set_title(f"{structure['data_type'].title()} Data Over Time: {selected_entity}", fontsize=16, pad=20)
-                        ax.set_xlabel("Time", fontsize=12)
-                        ax.set_ylabel("Value", fontsize=12)
-                        ax.grid(True, linestyle="--", alpha=0.3)
-                        
-                        def init():
-                            line.set_data([], [])
-                            return line,
-                        
-                        def animate(i):
-                            line.set_data(x_smooth[:i], y_smooth[:i])
-                            return line,
-                        
-                        anim = FuncAnimation(
-                            fig, animate, init_func=init,
-                            frames=len(x_smooth), interval=50, blit=True
-                        )
-                        
-                elif chart_type == "Value Comparison Animation" and structure['value_columns']:
-                    # Create value comparison animation
-                    if 'selected_values' in locals():
-                        comparison_data = create_value_comparison_data(df, structure['entity_column'], selected_values, selected_entity)
-                    else:
-                        comparison_data = create_value_comparison_data(df, structure['entity_column'], structure['value_columns'], selected_entity)
-                    
-                    if comparison_data is not None and len(comparison_data) > 0:
-                        categories = comparison_data["Category"].values
-                        values = comparison_data["Value"].values
-                        
-                        # Create bar chart animation
-                        fig, ax = plt.subplots(figsize=(12, 8))
-                        bars = ax.bar(range(len(categories)), [0] * len(categories), color=plt.cm.viridis(np.linspace(0, 1, len(categories))))
-                        
-                        ax.set_xlim(-0.5, len(categories) - 0.5)
-                        ax.set_ylim(0, max(values) * 1.1)
-                        ax.set_title(f"{structure['data_type'].title()} Value Comparison: {selected_entity}", fontsize=16, pad=20)
-                        ax.set_xlabel("Categories", fontsize=12)
-                        ax.set_ylabel("Values", fontsize=12)
-                        ax.set_xticks(range(len(categories)))
-                        ax.set_xticklabels(categories, rotation=45, ha='right')
-                        plt.tight_layout()
-                        
-                        def animate_bars(frame):
-                            for i, bar in enumerate(bars):
-                                if frame > i * 5:  # Stagger the animation
-                                    current_height = min(values[i], values[i] * (frame - i * 5) / 20)
-                                    bar.set_height(current_height)
-                            return bars
-                        
-                        anim = FuncAnimation(
-                            fig, animate_bars,
-                            frames=len(categories) * 5 + 20, interval=100, blit=False
-                        )
-                
-                # Save animation
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmpfile:
-                    try:
-                        anim.save(tmpfile.name, writer="ffmpeg", fps=30)
-                        st.success("✅ Animation Generated Successfully!")
-                        
-                        with open(tmpfile.name, "rb") as f:
-                            video_bytes = f.read()
-                            st.video(video_bytes)
-                            
-                            # Create filename based on data type and entity
-                            filename = f"{structure['data_type']}_{selected_entity}_{chart_type.lower().replace(' ', '_')}.mp4"
-                            st.download_button(
-                                "📥 Download Animation", 
-                                video_bytes, 
-                                file_name=filename,
-                                mime="video/mp4"
-                            )
-                    except Exception as e:
-                        st.error(f"Error generating video: {str(e)}")
-                    finally:
-                        if os.path.exists(tmpfile.name):
-                            os.remove(tmpfile.name)
+        if not structure['time_columns']:
+            st.error("❌ No time columns detected! Please make sure your data has year/date columns.")
+        elif not structure['entities']:
+            st.error("❌ No entities detected! Please check your data format.")
+        else:
+            # Configuration options
+            st.subheader("⚙️ Chart Configuration")
             
-    except Exception as e:
-        st.error(f"Error processing file: {str(e)}")
-        st.write("Please make sure your file has the correct format and contains numeric data.")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                chart_type = st.selectbox(
+                    "Chart Type:",
+                    ["Individual Entity Time Series", "Bar Race (Top Entities)"],
+                    help="Choose the type of animation you want to create"
+                )
+            
+            with col2:
+                if chart_type == "Individual Entity Time Series":
+                    selected_entity = st.selectbox(
+                        f"Select {structure['entity_column']}:",
+                        structure['entities'],
+                        help="Choose which entity to animate"
+                    )
+                else:
+                    top_n = st.slider(
+                        "Number of top entities to show:",
+                        min_value=5, max_value=20, value=10,
+                        help="How many top entities to display in the bar race"
+                    )
+            
+            # Generate chart button
+            if st.button("🎬 Generate Animation", type="primary"):
+                
+                with st.spinner("Creating your animated chart..."):
+                    
+                    try:
+                        if chart_type == "Individual Entity Time Series":
+                            # Create time series for selected entity
+                            time_series_data = prepare_time_series_data(
+                                df, selected_entity, structure['entity_column'], structure['time_columns']
+                            )
+                            
+                            if time_series_data is None or len(time_series_data) < 2:
+                                st.error("❌ Not enough data points for the selected entity.")
+                            else:
+                                anim, fig = create_animated_line_chart(
+                                    time_series_data, selected_entity, "Time Series Animation"
+                                )
+                                
+                                filename = f"timeseries_{selected_entity.replace(' ', '_')}.mp4"
+                        
+                        else:  # Bar Race
+                            anim, fig = create_animated_bar_race(
+                                df, structure['entity_column'], structure['time_columns'], top_n
+                            )
+                            
+                            if anim is None:
+                                st.error("❌ Unable to create bar race. Please check your data.")
+                                st.stop()
+                            
+                            filename = f"bar_race_top_{top_n}.mp4"
+                        
+                        # Save and display animation
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmpfile:
+                            anim.save(tmpfile.name, writer="ffmpeg", fps=20, bitrate=2000)
+                            
+                            st.success("✅ Animation Generated Successfully!")
+                            
+                            # Display video
+                            with open(tmpfile.name, "rb") as f:
+                                video_bytes = f.read()
+                                st.video(video_bytes)
+                                
+                                # Download button
+                                st.download_button(
+                                    "📥 Download Animation",
+                                    video_bytes,
+                                    file_name=filename,
+                                    mime="video/mp4"
+                                )
+                            
+                            # Clean up
+                            os.unlink(tmpfile.name)
+                            plt.close(fig)
+                    
+                    except Exception as e:
+                        st.error(f"❌ Error generating animation: {str(e)}")
+                        st.write("Please check your data format and try again.")
 
 else:
-    st.info("👆 Please upload a CSV or Excel file to get started!")
+    st.info("👆 Upload your data file to get started!")
     
-    # Show example of expected data formats
-    st.subheader("📄 Supported Data Formats")
+    st.subheader("📄 Expected Data Format")
+    st.write("""
+    Your data should have:
+    - **First column**: Entity names (Countries, Products, Students, etc.)
+    - **Year columns**: 1970, 1971, 1972, etc. (or any time periods)
+    - **Values**: Numeric data for each entity and time period
+    """)
     
-    tab1, tab2 = st.tabs(["Time Series Format", "Value Comparison Format"])
+    # Show example
+    example_data = {
+        'Country Name': ['Afghanistan', 'Albania', 'Algeria'],
+        'Region': ['Asia', 'Europe', 'Africa'], 
+        'Image URL': ['url1', 'url2', 'url3'],
+        '1970': [26.25, 59.375, 30],
+        '1971': [26.25, 59.375, 30],
+        '1972': [26.25, 59.375, 30],
+        '1973': [26.25, 59.375, 30]
+    }
     
-    with tab1:
-        st.write("**Example: Country data over years**")
-        example_time = pd.DataFrame({
-            'Country Name': ['USA', 'Canada', 'Mexico'],
-            'Indicator': ['Population', 'Population', 'Population'],
-            '2020': [331, 38, 128],
-            '2021': [332, 38.2, 129],
-            '2022': [333, 38.4, 130]
-        })
-        st.dataframe(example_time)
+    st.subheader("📊 Example Data Structure")
+    example_df = pd.DataFrame(example_data)
+    st.dataframe(example_df)
     
-    with tab2:
-        st.write("**Example: Student performance data**")
-        example_values = pd.DataFrame({
-            'Student Name': ['Alice', 'Bob', 'Charlie'],
-            'Math': [85, 92, 78],
-            'Science': [90, 88, 82],
-            'English': [88, 85, 90],
-            'History': [92, 80, 85]
-        })
-        st.dataframe(example_values)
+    st.write("""
+    **Supported Chart Types:**
+    - 📈 **Individual Entity Time Series**: Shows how one entity's values change over time
+    - 🏁 **Bar Race**: Animated ranking showing top entities competing over time
+    """)

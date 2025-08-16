@@ -2,14 +2,63 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
+from matplotlib.animation import FuncAnimation, PillowWriter
 import matplotlib.cm as cm
 import tempfile
 import os
 import re
+import subprocess
+import sys
+
+# Set matplotlib backend for headless environments
+import matplotlib
+matplotlib.use('Agg')
+
+# Check for video writers
+def check_video_writers():
+    """Check available video writers and return the best one"""
+    writers = {}
+    
+    # Check for FFmpeg
+    try:
+        subprocess.check_output(['ffmpeg', '-version'], stderr=subprocess.STDOUT)
+        writers['ffmpeg'] = True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        writers['ffmpeg'] = False
+    
+    # Check for imageio-ffmpeg (fallback)
+    try:
+        import imageio_ffmpeg
+        writers['imageio-ffmpeg'] = True
+    except ImportError:
+        writers['imageio-ffmpeg'] = False
+    
+    # Pillow writer (GIF fallback - always available)
+    writers['pillow'] = True
+    
+    return writers
+
+# Global variable to store available writers
+AVAILABLE_WRITERS = check_video_writers()
 
 st.title("📊 Time Series Data Animation Generator")
 st.write("Upload your data file and create animated charts showing how values change over time!")
+
+# Display system status
+with st.expander("🔧 System Status", expanded=False):
+    if AVAILABLE_WRITERS['ffmpeg']:
+        st.success("✅ FFmpeg available - MP4 videos supported")
+    elif AVAILABLE_WRITERS['imageio-ffmpeg']:
+        st.info("⚡ ImageIO-FFmpeg available - MP4 videos supported")
+    else:
+        st.warning("⚠️ No MP4 support - animations will be saved as GIF files")
+    
+    st.write("Available formats:")
+    formats = []
+    if AVAILABLE_WRITERS['ffmpeg'] or AVAILABLE_WRITERS['imageio-ffmpeg']:
+        formats.append("MP4")
+    formats.append("GIF")
+    st.write(f"• {', '.join(formats)}")
 
 uploaded_file = st.file_uploader("Upload Data", type=["csv", "xlsx", "xls", "xlsm", "xlt", "xml", "xlsb"])
 
@@ -364,26 +413,74 @@ if uploaded_file:
                             filename = f"bar_race_top_{top_n}.mp4"
                         
                         # Save and display animation
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmpfile:
-                            anim.save(tmpfile.name, writer="ffmpeg", fps=20, bitrate=2000)
-                            
+                        success = False
+                        video_bytes = None
+                        file_extension = None
+                        
+                        # Try different writers in order of preference
+                        if AVAILABLE_WRITERS['ffmpeg']:
+                            try:
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmpfile:
+                                    anim.save(tmpfile.name, writer="ffmpeg", fps=20, bitrate=2000)
+                                    with open(tmpfile.name, "rb") as f:
+                                        video_bytes = f.read()
+                                    os.unlink(tmpfile.name)
+                                    file_extension = ".mp4"
+                                    success = True
+                            except Exception as e:
+                                st.warning(f"FFmpeg failed: {str(e)}. Trying alternative...")
+                        
+                        # Fallback to imageio-ffmpeg
+                        if not success and AVAILABLE_WRITERS['imageio-ffmpeg']:
+                            try:
+                                import imageio
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmpfile:
+                                    anim.save(tmpfile.name, writer="ffmpeg", fps=20)
+                                    with open(tmpfile.name, "rb") as f:
+                                        video_bytes = f.read()
+                                    os.unlink(tmpfile.name)
+                                    file_extension = ".mp4"
+                                    success = True
+                            except Exception as e:
+                                st.warning(f"ImageIO-FFmpeg failed: {str(e)}. Trying GIF...")
+                        
+                        # Final fallback to GIF using Pillow
+                        if not success:
+                            try:
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".gif") as tmpfile:
+                                    writer = PillowWriter(fps=10)
+                                    anim.save(tmpfile.name, writer=writer)
+                                    with open(tmpfile.name, "rb") as f:
+                                        video_bytes = f.read()
+                                    os.unlink(tmpfile.name)
+                                    file_extension = ".gif"
+                                    filename = filename.replace('.mp4', '.gif')
+                                    success = True
+                                    st.info("� Generated as GIF since MP4 is not available in this environment")
+                            except Exception as e:
+                                st.error(f"All video generation methods failed: {str(e)}")
+                                success = False
+                        
+                        if success and video_bytes:
                             st.success("✅ Animation Generated Successfully!")
                             
-                            # Display video
-                            with open(tmpfile.name, "rb") as f:
-                                video_bytes = f.read()
+                            # Display video/gif
+                            if file_extension == ".mp4":
                                 st.video(video_bytes)
-                                
-                                # Download button
-                                st.download_button(
-                                    "📥 Download Animation",
-                                    video_bytes,
-                                    file_name=filename,
-                                    mime="video/mp4"
-                                )
+                                mime_type = "video/mp4"
+                            else:  # .gif
+                                st.image(video_bytes)
+                                mime_type = "image/gif"
                             
-                            # Clean up
-                            os.unlink(tmpfile.name)
+                            # Download button
+                            st.download_button(
+                                "📥 Download Animation",
+                                video_bytes,
+                                file_name=filename,
+                                mime=mime_type
+                            )
+                        else:
+                            st.error("❌ Failed to generate animation. Please try with different data or contact support.")
                             plt.close(fig)
                     
                     except Exception as e:

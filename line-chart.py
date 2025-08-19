@@ -141,7 +141,7 @@ def detect_structure(df):
     
     # Sort time columns
     structure['time_columns'] = sorted(structure['time_columns'], 
-                                     key=lambda x: float(str(x)) if str(x).replace('.', '').replace('-', '').isdigit() else 0)
+                                    key=lambda x: float(str(x)) if str(x).replace('.', '').replace('-', '').isdigit() else 0)
     
     return structure
 
@@ -223,29 +223,60 @@ def create_animated_line_chart(time_series_data, entity_name, chart_title="Time 
     
     plt.tight_layout()
     
+    # Capture axis/text handles so we can fade them in
+    title_text = ax.title
+    xlabel_text = ax.xaxis.label
+    ylabel_text = ax.yaxis.label
+    x_tick_labels = ax.get_xticklabels()
+    y_tick_labels = ax.get_yticklabels()
+    gridlines = ax.yaxis.get_gridlines() + ax.xaxis.get_gridlines()
+
+    # Initialize axis artists to invisible
+    for spine in ['bottom', 'left']:
+        ax.spines[spine].set_alpha(0.0)
+    title_text.set_alpha(0.0)
+    xlabel_text.set_alpha(0.0)
+    ylabel_text.set_alpha(0.0)
+    for tl in x_tick_labels + y_tick_labels:
+        tl.set_alpha(0.0)
+    for g in gridlines:
+        g.set_alpha(0.0)
+
     def init():
         line.set_data([], [])
         point.set_data([], [])
         value_text.set_text('')
         return line, point, value_text
-    
+
     def animate(i):
+        total = max(1, len(x_smooth))
+        progress = (i + 1) / total
+
         if i < len(x_smooth):
-            # Update line
+            # Update line and point
             line.set_data(x_smooth[:i+1], y_smooth[:i+1])
-            
-            # Update current point
             current_x = x_smooth[i]
             current_y = y_smooth[i]
             point.set_data([current_x], [current_y])
-            
-            # Update value text
             value_text.set_text(f'Time: {current_x:.1f}\nValue: {current_y:.2f}')
-        
+
+        # Fade axis elements in proportionally to progress
+        alpha = min(1.0, progress * 1.2)
+        for spine in ['bottom', 'left']:
+            ax.spines[spine].set_alpha(alpha)
+        title_text.set_alpha(alpha)
+        xlabel_text.set_alpha(alpha)
+        ylabel_text.set_alpha(alpha)
+        for tl in x_tick_labels + y_tick_labels:
+            tl.set_alpha(alpha)
+        for g in gridlines:
+            g.set_alpha(alpha * 0.3)
+
         return line, point, value_text
-    
+
+    # Disable blitting so axis artist updates are rendered properly
     anim = FuncAnimation(fig, animate, init_func=init, frames=len(x_smooth), 
-                        interval=100, blit=True, repeat=True)
+                        interval=100, blit=False, repeat=True)
     
     return anim, fig
 
@@ -275,7 +306,11 @@ def create_animated_bar_race(df, entity_col, time_cols, top_n=10):
     
     def animate_bars(frame_idx):
         ax.clear()
-        
+
+        # compute progress for fade-in (0..1)
+        total = max(1, len(frames_data))
+        progress = (frame_idx + 1) / total
+
         if frame_idx < len(frames_data):
             frame_data = frames_data[frame_idx]
             time_period = frame_data['Time'].iloc[0]
@@ -309,6 +344,14 @@ def create_animated_bar_race(df, entity_col, time_cols, top_n=10):
             # Set consistent x-axis limits
             all_max = max([df['Value'].max() for df in frames_data if not df.empty])
             ax.set_xlim(0, all_max * 1.1)
+
+            # Fade in left spine, title, and tick labels as progress increases
+            alpha = min(1.0, progress * 1.5)
+            ax.spines['left'].set_alpha(alpha)
+            ax.title.set_alpha(alpha)
+            ax.xaxis.label.set_alpha(alpha)
+            for tl in ax.get_xticklabels() + ax.get_yticklabels():
+                tl.set_alpha(alpha)
         
         plt.tight_layout()
     
